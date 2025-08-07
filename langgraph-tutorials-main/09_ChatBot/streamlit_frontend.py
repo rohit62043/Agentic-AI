@@ -1,56 +1,95 @@
 import streamlit as st
 from langgraph_backend import chatbot
 from langchain_core.messages import HumanMessage
+import uuid
 
-# Configuration for LangGraph – unique thread ID per session
-CONFIG = {'configurable': {'thread_id': 'thread-1'}}
+# **************************************** utility functions *************************
 
-# Initialize message history in session state
+def generate_thread_id():
+    thread_id = uuid.uuid4()
+    return thread_id
+
+def reset_chat():
+    thread_id = generate_thread_id()
+    st.session_state['thread_id'] = thread_id
+    add_thread(st.session_state['thread_id'])
+    st.session_state['message_history'] = []
+
+def add_thread(thread_id):
+    if thread_id not in st.session_state['chat_threads']:
+        st.session_state['chat_threads'].append(thread_id)
+
+def load_conversation(thread_id):
+    state=chatbot.get_state(config={'configurable': {'thread_id': thread_id}})
+    return state.values.get("messages", [])
+
+
+# **************************************** Session Setup ******************************
 if 'message_history' not in st.session_state:
     st.session_state['message_history'] = []
 
-# Display previous messages in the chat UI
+if 'thread_id' not in st.session_state:
+    st.session_state['thread_id'] = generate_thread_id()
+
+if 'chat_threads' not in st.session_state:
+    st.session_state['chat_threads'] = []
+
+add_thread(st.session_state['thread_id'])
+
+
+# **************************************** Sidebar UI *********************************
+
+st.sidebar.title('LangGraph Chatbot')
+
+if st.sidebar.button('New Chat'):
+    reset_chat()
+
+st.sidebar.header('My Conversations')
+
+for thread_id in st.session_state['chat_threads'][::-1]:
+    if st.sidebar.button(str(thread_id)):
+        st.session_state['thread_id'] = thread_id
+        messages = load_conversation(thread_id)
+
+        temp_messages = []
+
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                role='user'
+            else:
+                role='assistant'
+            temp_messages.append({'role': role, 'content': msg.content})
+
+        st.session_state['message_history'] = temp_messages
+
+
+# **************************************** Main UI ************************************
+
+# loading the conversation history
 for message in st.session_state['message_history']:
     with st.chat_message(message['role']):
-        st.markdown(message['content'])  # Using markdown for better formatting
+        st.text(message['content'])
 
-# Chat input field for user
 user_input = st.chat_input('Type here')
 
 if user_input:
-    # Save user message to session history
-    st.session_state['message_history'].append({
-        'role': 'user',
-        'content': user_input
-    })
 
-    # Display user message immediately
+    # first add the message to message_history
+    st.session_state['message_history'].append({'role': 'user', 'content': user_input})
     with st.chat_message('user'):
-        st.markdown(user_input)
+        st.text(user_input)
 
-    # Start assistant response with streaming
+    CONFIG = {'configurable': {'thread_id': st.session_state['thread_id']}}
+
+    # first add the message to message_history
     with st.chat_message('assistant'):
-        # Create an empty placeholder to stream content into
-        response_placeholder = st.empty()
-        full_response = ""
 
-        # Stream response from LangGraph LLM agent
-        ai_stream = chatbot.stream(
-            {
-                'messages': [HumanMessage(content=user_input)]  # Must be a list of messages
-            },
-            config=CONFIG,
-            stream_mode='messages'  # Always use 'messages'
+        ai_message = st.write_stream(
+            message_chunk.content for message_chunk, metadata in chatbot.stream(
+                {'messages': [HumanMessage(content=user_input)]},
+                config= CONFIG,
+                stream_mode= 'messages'
+            )
         )
 
-        # Collect tokens as they stream in
-        for message_chunk, _ in ai_stream:
-            if message_chunk.content:  # Only update if content exists
-                full_response += message_chunk.content
-                response_placeholder.markdown(full_response)  # Update UI progressively
-
-    # Save assistant's full response to session history
-    st.session_state['message_history'].append({
-        'role': 'assistant',
-        'content': full_response
-    })
+    st.session_state['message_history'].append({'role': 'assistant', 'content': ai_message})
